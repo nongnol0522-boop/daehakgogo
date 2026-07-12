@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>스터디 메이트 - 실시간 동기화 현황판</title>
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4" defer></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2" defer></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body class="bg-slate-50 text-slate-800 min-h-screen font-sans">
@@ -21,7 +21,7 @@
                     <p class="text-xs text-slate-500 font-medium">우리들의 실시간 목표 및 벌금 정산소</p>
                 </div>
             </div>
-            
+
             <div class="flex gap-3 text-xs font-bold">
                 <div class="bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-xl flex items-center gap-1.5 shadow-xs">
                     9월 모평: <span id="mopyung-dday" class="text-amber-600 font-extrabold text-sm">D-Day</span>
@@ -56,23 +56,57 @@
         <div id="friends-container" class="grid grid-cols-1 md:grid-cols-2 gap-8"></div>
     </main>
 
+    <!-- 시간 선택 모달 (스크롤 피커) -->
+    <div id="time-picker-modal" class="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] hidden items-center justify-center px-4">
+        <div class="bg-white rounded-2xl shadow-xl w-full max-w-xs p-5">
+            <h3 id="time-picker-title" class="text-sm font-bold text-slate-800 mb-4 text-center">목표 시간 선택</h3>
+            <div class="flex justify-center items-center gap-2 mb-5">
+                <select id="tp-hour" class="text-2xl font-bold text-center bg-slate-50 border border-slate-200 rounded-xl py-3 px-2 w-24 focus:outline-none focus:ring-2 focus:ring-indigo-300"></select>
+                <span class="text-2xl font-bold text-slate-400">:</span>
+                <select id="tp-minute" class="text-2xl font-bold text-center bg-slate-50 border border-slate-200 rounded-xl py-3 px-2 w-24 focus:outline-none focus:ring-2 focus:ring-indigo-300"></select>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="closeTimePicker(false)" class="flex-1 py-2.5 rounded-xl bg-slate-100 text-slate-600 font-bold text-sm cursor-pointer">취소</button>
+                <button onclick="closeTimePicker(true)" class="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white font-bold text-sm cursor-pointer">확인</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Day Off 선택 모달 (스크롤 피커) -->
+    <div id="dayoff-picker-modal" class="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] hidden items-center justify-center px-4">
+        <div class="bg-white rounded-2xl shadow-xl w-full max-w-xs p-5">
+            <h3 class="text-sm font-bold text-slate-800 mb-4 text-center">Day Off 요일 선택</h3>
+            <div class="flex justify-center mb-5">
+                <select id="do-select" class="text-lg font-bold text-center bg-slate-50 border border-slate-200 rounded-xl py-3 px-4 w-full focus:outline-none focus:ring-2 focus:ring-amber-300"></select>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="closeDayOffPicker(false)" class="flex-1 py-2.5 rounded-xl bg-slate-100 text-slate-600 font-bold text-sm cursor-pointer">취소</button>
+                <button onclick="closeDayOffPicker(true)" class="flex-1 py-2.5 rounded-xl bg-amber-500 text-white font-bold text-sm cursor-pointer">확인</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const SUPABASE_URL = "https://jgmrktikgxtivsedsvmz.supabase.co";
         const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpnbXJrdGlrZ3h0aXZzZWRzdm16Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM3NzM3MzQsImV4cCI6MjA5OTM0OTczNH0.cL2BOJGYFvKtFjNloDwJOd6OwgXoJ8d8PeI1MRadEXo";
-        
+
         let supabaseClient = null;
-        try {
-            if (window.supabase && typeof window.supabase.createClient === 'function') {
-                supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        function initSupabase() {
+            try {
+                if (window.supabase && typeof window.supabase.createClient === 'function') {
+                    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+                }
+            } catch(e) {
+                console.error("Supabase 로드 실패:", e);
             }
-        } catch(e) {
-            console.error("Supabase 로드 실패:", e);
         }
 
-        let weekOffset = 0; 
+        let weekOffset = 0;
         let currentWeekDates = [];
         let serverData = [];
-        let selectedDaysMap = {}; 
+        let selectedDaysMap = {};
+        let syncedWeeks = new Set(); // 이미 마스터 동기화를 완료한 주차 (중복 라운드트립 방지)
 
         function updateDDays() {
             const today = new Date();
@@ -110,14 +144,12 @@
             loadServerData();
         }
 
-        // 🛠️ 대대적 수정: null 유발 및 구조적 깨짐 방지를 위해 검증된 JSON 호환 안전 문자열 변환기 도입
         function parseDayTargets(friend) {
             const fallback = friend.target_start_time || "08:40";
             if (!friend.notes || friend.notes.trim() === "") {
                 return Array(7).fill(fallback);
             }
             try {
-                // 저장 형식이 쉼표 분할형인지 검증
                 const blocks = friend.notes.split("|");
                 if (blocks.length === 7) {
                     return blocks.map(t => (t && t.trim() !== "" && t !== "null") ? t : fallback);
@@ -126,42 +158,57 @@
             return Array(7).fill(fallback);
         }
 
-        // 🛠️ 미래 주차 이동 시 마스터 리스트 자동 동기화 기능 로직 보수
+        // 미래 주차 이동 시 마스터 리스트 자동 동기화 (한 주차당 1회만 수행 -> 속도 개선)
         async function syncWithMasterList(weekKey, currentData) {
             if (!supabaseClient) return currentData;
 
-            // 마스터 보관함 로드
-            let { data: masters } = await supabaseClient.from('study_mate').select('*').eq('week_key', 'master_list');
+            let { data: masters, error: mErr } = await supabaseClient.from('study_mate').select('*').eq('week_key', 'master_list');
+            if (mErr) { console.error("마스터 리스트 조회 실패:", mErr.message); return currentData; }
             if (!masters || masters.length === 0) return currentData;
 
-            let needReload = false;
-            for (let master of masters) {
-                const isExist = currentData.some(d => d.name === master.name);
-                if (!isExist) {
-                    const fallbackTime = master.target_start_time || "08:40";
-                    const fallbackNotes = master.notes || Array(7).fill(fallbackTime).join("|");
+            const missing = masters.filter(master => !currentData.some(d => d.name === master.name));
+            if (missing.length === 0) return currentData;
 
-                    // 미래 주차에 자동으로 명단 복사 삽입
-                    const { error } = await supabaseClient.from('study_mate').insert([{
-                        id: Date.now() + Math.floor(Math.random() * 50000),
-                        name: master.name,
-                        target_start_time: fallbackTime,
-                        week_key: weekKey,
-                        time_done_list: [false, false, false, false, false, false, false],
-                        start_done_list: [false, false, false, false, false, false, false],
-                        notes: fallbackNotes,
-                        day_off_used: false,
-                        day_off_day: 0
-                    }]);
-                    if(!error) needReload = true;
-                }
+            const newRows = missing.map((master, i) => {
+                const fallbackTime = master.target_start_time || "08:40";
+                const fallbackNotes = master.notes || Array(7).fill(fallbackTime).join("|");
+                return {
+                    id: Date.now() + i,
+                    name: master.name,
+                    target_start_time: fallbackTime,
+                    week_key: weekKey,
+                    time_done_list: [false, false, false, false, false, false, false],
+                    start_done_list: [false, false, false, false, false, false, false],
+                    notes: fallbackNotes,
+                    day_off_used: false,
+                    day_off_day: 0
+                };
+            });
+
+            const { error: insErr } = await supabaseClient.from('study_mate').insert(newRows);
+            if (insErr) {
+                console.error("마스터 동기화 삽입 실패:", insErr.message);
+                return currentData;
             }
 
-            if (needReload) {
-                let { data: reFetched } = await supabaseClient.from('study_mate').select('*').eq('week_key', weekKey).order('created_at', { ascending: true });
-                return reFetched || [];
+            let { data: reFetched, error: reErr } = await supabaseClient
+                .from('study_mate')
+                .select('*')
+                .eq('week_key', weekKey)
+                .order('id', { ascending: true });
+            if (reErr) { console.error(reErr.message); return currentData; }
+            return reFetched || currentData;
+        }
+
+        function setSyncStatus(ok) {
+            const el = document.getElementById('sync-status');
+            if (ok) {
+                el.className = "text-xs bg-emerald-100 text-emerald-800 font-bold px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-xs";
+                el.innerHTML = `<span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span> 실시간 서버 On`;
+            } else {
+                el.className = "text-xs bg-rose-100 text-rose-800 font-bold px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-xs";
+                el.innerHTML = `<span class="w-1.5 h-1.5 bg-rose-500 rounded-full"></span> 서버 연결 오류`;
             }
-            return currentData;
         }
 
         async function loadServerData() {
@@ -178,16 +225,21 @@
                     .from('study_mate')
                     .select('*')
                     .eq('week_key', weekKey)
-                    .order('created_at', { ascending: true });
+                    .order('id', { ascending: true });
 
                 if (error) throw error;
 
-                // 미래 연동 마스터 싱크 작동
-                data = await syncWithMasterList(weekKey, data || []);
+                if (!syncedWeeks.has(weekKey)) {
+                    data = await syncWithMasterList(weekKey, data || []);
+                    syncedWeeks.add(weekKey);
+                }
+
                 serverData = data || [];
+                setSyncStatus(true);
                 renderApp();
             } catch (err) {
                 console.error("데이터 로드 중 에러:", err);
+                setSyncStatus(false);
                 fallbackToLocal();
             }
         }
@@ -215,7 +267,68 @@
             renderApp();
         }
 
-        // 🛠️ 요일별 시간 세팅 기능 완벽 수정 (파이프라인 안심 저장 기법 도입)
+        // ===== 스크롤(휠) 시간 피커 =====
+        let _timePickerResolve = null;
+        function openTimePicker(defaultTime, title) {
+            return new Promise(resolve => {
+                _timePickerResolve = resolve;
+                const [dh, dm] = (defaultTime || "08:40").split(":");
+                const hourSel = document.getElementById('tp-hour');
+                const minSel = document.getElementById('tp-minute');
+                hourSel.innerHTML = Array.from({length: 24}, (_, i) => {
+                    const h = String(i).padStart(2, '0');
+                    return `<option value="${h}" ${h === dh ? 'selected' : ''}>${h}시</option>`;
+                }).join('');
+                minSel.innerHTML = Array.from({length: 12}, (_, i) => {
+                    const m = String(i * 5).padStart(2, '0');
+                    return `<option value="${m}" ${m === dm ? 'selected' : ''}>${m}분</option>`;
+                }).join('');
+                document.getElementById('time-picker-title').innerText = title || "목표 시간 선택";
+                const modal = document.getElementById('time-picker-modal');
+                modal.classList.remove('hidden');
+                modal.classList.add('flex');
+            });
+        }
+        function closeTimePicker(confirmed) {
+            const modal = document.getElementById('time-picker-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            if (_timePickerResolve) {
+                if (confirmed) {
+                    const h = document.getElementById('tp-hour').value;
+                    const m = document.getElementById('tp-minute').value;
+                    _timePickerResolve(`${h}:${m}`);
+                } else {
+                    _timePickerResolve(null);
+                }
+                _timePickerResolve = null;
+            }
+        }
+
+        // ===== 스크롤(휠) Day Off 피커 =====
+        let _dayOffResolve = null;
+        function openDayOffPicker(defaultUsed, defaultDay) {
+            return new Promise(resolve => {
+                _dayOffResolve = resolve;
+                const days = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"];
+                const sel = document.getElementById('do-select');
+                sel.innerHTML = `<option value="-1">해제 (사용 안 함)</option>` +
+                    days.map((d, i) => `<option value="${i}" ${defaultUsed && defaultDay === i ? 'selected' : ''}>${d}</option>`).join('');
+                const modal = document.getElementById('dayoff-picker-modal');
+                modal.classList.remove('hidden');
+                modal.classList.add('flex');
+            });
+        }
+        function closeDayOffPicker(confirmed) {
+            const modal = document.getElementById('dayoff-picker-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            if (_dayOffResolve) {
+                _dayOffResolve(confirmed ? parseInt(document.getElementById('do-select').value, 10) : null);
+                _dayOffResolve = null;
+            }
+        }
+
         async function editSelectedDaysTarget(friendId) {
             const targetDays = selectedDaysMap[friendId] || [];
             if (targetDays.length === 0) {
@@ -227,28 +340,23 @@
             if (!friend) return;
 
             const currentArr = parseDayTargets(friend);
-            const inputTime = prompt("선택한 요일들의 새로운 목표 시간을 입력하세요 (예: 08:40):", currentArr[targetDays[0]]);
-            if (!inputTime || inputTime.trim() === "") return;
+            const newTime = await openTimePicker(currentArr[targetDays[0]], "선택 요일 목표 시간");
+            if (!newTime) return; // 취소함
 
-            // 선택된 칸 교체
-            targetDays.forEach(idx => {
-                currentArr[idx] = inputTime.trim();
-            });
-
-            // 절대 깨지지 않는 구분자 기법 적용
+            targetDays.forEach(idx => { currentArr[idx] = newTime; });
             const finalNotesStr = currentArr.join("|");
 
             if (supabaseClient) {
-                // 1. 현재 보고 있는 주차 데이터 수정
-                await supabaseClient.from('study_mate').update({ notes: finalNotesStr }).eq('id', friendId);
-                // 2. 미래에 생성될 주차들을 위해 마스터 리스트에도 동시 저장하여 영구 박제
-                await supabaseClient.from('study_mate').update({ notes: finalNotesStr }).eq('name', friend.name).eq('week_key', 'master_list');
+                const { error: e1 } = await supabaseClient.from('study_mate').update({ notes: finalNotesStr }).eq('id', friendId);
+                if (e1) { alert("저장 실패: " + e1.message); return; }
+                const { error: e2 } = await supabaseClient.from('study_mate').update({ notes: finalNotesStr }).eq('name', friend.name).eq('week_key', 'master_list');
+                if (e2) console.warn("마스터 리스트 동기화 실패:", e2.message);
             } else {
                 friend.notes = finalNotesStr;
                 saveLocalBackup();
             }
 
-            selectedDaysMap[friendId] = []; // 선택 배열 비우기
+            selectedDaysMap[friendId] = [];
             loadServerData();
         }
 
@@ -264,10 +372,9 @@
             serverData.forEach(friend => {
                 if(!friend.time_done_list) friend.time_done_list = [false, false, false, false, false, false, false];
                 if(!friend.start_done_list) friend.start_done_list = [false, false, false, false, false, false, false];
-                
-                // 기본값 처리로 안전성 100% 확보
+
                 if(!friend.target_start_time || friend.target_start_time === "null") friend.target_start_time = "08:40";
-                
+
                 let dayTargets = parseDayTargets(friend);
 
                 let timeSuccess = friend.time_done_list.filter(v => v === true).length;
@@ -275,7 +382,7 @@
                 let penalty = 0;
 
                 friend.time_done_list.forEach((v, idx) => {
-                    if (friend.day_off_used && friend.day_off_day === idx) return; 
+                    if (friend.day_off_used && friend.day_off_day === idx) return;
                     if (!v) penalty += 500;
                 });
                 friend.start_done_list.forEach((v, idx) => {
@@ -312,7 +419,7 @@
                             <div class="flex gap-1 mb-4 bg-slate-50 p-1.5 rounded-xl border border-slate-100 justify-between">
                                 ${["월", "화", "수", "목", "금", "토", "일"].map((day, idx) => {
                                     const isSelected = selectedDays.includes(idx);
-                                    return `<button onclick="toggleDaySelection(${friend.id}, ${idx})" class="flex-1 text-xs py-1 rounded-lg font-bold transition cursor-pointer ${isSelected ? 'bg-indigo-600 text-white shadow-xs' : 'bg-white text-slate-600 border border-slate-200/60 hover:bg-slate-50'}\">${day}</button>`;
+                                    return `<button onclick="toggleDaySelection(${friend.id}, ${idx})" class="flex-1 text-xs py-1 rounded-lg font-bold transition cursor-pointer ${isSelected ? 'bg-indigo-600 text-white shadow-xs' : 'bg-white text-slate-600 border border-slate-200/60 hover:bg-slate-50'}">${day}</button>`;
                                 }).join('')}
                             </div>
 
@@ -325,8 +432,148 @@
                                 <div class="grid grid-cols-8 text-center text-[10px] font-bold text-slate-400 pb-1 border-b border-slate-100">
                                     <div>구분</div>${currentWeekDates.map(d => `<div>${d.label}</div>`).join('')}
                                 </div>
-                                
+
                                 <div class="grid grid-cols-8 text-center text-[9px] font-bold text-indigo-600 bg-indigo-50/70 py-0.5 rounded-md">
                                     <div class="text-slate-400">목표시간</div>
                                     ${dayTargets.map(t => `<div>${t}</div>`).join('')}
                                 </div>
+
+                                <div class="grid grid-cols-8 items-center text-center">
+                                    <div class="text-[11px] font-bold text-slate-500 text-left">공부시간</div>
+                                    ${friend.time_done_list.map((v, idx) => `
+                                        <div class="flex justify-center">
+                                            <button onclick="toggleCheck(${friend.id}, ${idx}, 'time_done_list', ${v})" class="w-6 h-6 rounded-md flex items-center justify-center border text-xs cursor-pointer ${friend.day_off_used && friend.day_off_day === idx ? 'bg-amber-100 border-amber-100 text-amber-600' : v ? 'bg-indigo-50 border-indigo-200 text-indigo-600 font-bold' : 'bg-white border-slate-200'}">
+                                                ${friend.day_off_used && friend.day_off_day === idx ? '☁️' : v ? 'O' : 'X'}
+                                            </button>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                                <div class="grid grid-cols-8 items-center text-center">
+                                    <div class="text-[11px] font-bold text-slate-500 text-left">시작시간</div>
+                                    ${friend.start_done_list.map((v, idx) => `
+                                        <div class="flex justify-center">
+                                            <button onclick="toggleCheck(${friend.id}, ${idx}, 'start_done_list', ${v})" class="w-6 h-6 rounded-md flex items-center justify-center border text-xs cursor-pointer ${friend.day_off_used && friend.day_off_day === idx ? 'bg-amber-100 border-amber-100 text-amber-600' : v ? 'bg-emerald-50 border-emerald-200 text-emerald-600 font-bold' : 'bg-white border-slate-200'}">
+                                                ${friend.day_off_used && friend.day_off_day === idx ? '☁️' : v ? 'O' : 'X'}
+                                            </button>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="bg-rose-50 px-6 py-3.5 border-t border-rose-100 flex justify-between items-center">
+                            <span class="text-xs font-bold text-rose-700">이번 주 누적 벌금</span>
+                            <span class="text-sm font-extrabold text-rose-700">${penalty.toLocaleString()}원</span>
+                        </div>
+                    </div>`;
+                container.innerHTML += cardHtml;
+            });
+        }
+
+        async function addNewFriend() {
+            const name = prompt("새로운 친구 이름을 입력하세요:");
+            if(!name || name.trim() === "") return;
+
+            const picked = await openTimePicker("08:40", "목표 시작 시간 설정");
+            const time = picked || "08:40";
+            const defaultNotes = Array(7).fill(time).join("|");
+
+            if (supabaseClient) {
+                // 1. 미래 자동 복사용 마스터 명단에 추가
+                const { error: e1 } = await supabaseClient.from('study_mate').insert([{
+                    id: Date.now(),
+                    name: name.trim(),
+                    target_start_time: time,
+                    week_key: 'master_list',
+                    time_done_list: [false, false, false, false, false, false, false],
+                    start_done_list: [false, false, false, false, false, false, false],
+                    notes: defaultNotes,
+                    day_off_used: false, day_off_day: 0
+                }]);
+                if (e1) { alert("등록 실패 (마스터 리스트): " + e1.message); return; }
+
+                // 2. 현재 주차에도 실시간 동시 추가
+                const { error: e2 } = await supabaseClient.from('study_mate').insert([{
+                    id: Date.now() + 1,
+                    name: name.trim(),
+                    target_start_time: time,
+                    week_key: getWeekStorageKey(),
+                    time_done_list: [false, false, false, false, false, false, false],
+                    start_done_list: [false, false, false, false, false, false, false],
+                    notes: defaultNotes,
+                    day_off_used: false, day_off_day: 0
+                }]);
+                if (e2) { alert("등록 실패 (이번 주): " + e2.message); return; }
+            } else {
+                serverData.push({
+                    id: Date.now(), name: name.trim(), target_start_time: time, week_key: getWeekStorageKey(),
+                    time_done_list: [false, false, false, false, false, false, false],
+                    start_done_list: [false, false, false, false, false, false, false],
+                    notes: defaultNotes,
+                    day_off_used: false, day_off_day: 0
+                });
+                saveLocalBackup();
+            }
+            loadServerData();
+        }
+
+        async function toggleCheck(id, index, listName, currentVal) {
+            const friend = serverData.find(f => f.id === id);
+            if(friend) {
+                if(friend.day_off_used && friend.day_off_day === index) return;
+                let newList = [...friend[listName]];
+                newList[index] = !currentVal;
+
+                if (supabaseClient) {
+                    const { error } = await supabaseClient.from('study_mate').update({ [listName]: newList }).eq('id', id);
+                    if (error) { alert("저장 실패: " + error.message); return; }
+                } else {
+                    friend[listName] = newList;
+                    saveLocalBackup();
+                }
+                loadServerData();
+            }
+        }
+
+        async function setDayOff(id) {
+            const friend = serverData.find(f => f.id === id);
+            if(!friend) return;
+
+            const result = await openDayOffPicker(friend.day_off_used, friend.day_off_day);
+            if (result === null) return; // 취소함
+
+            const used = result !== -1;
+            const dayIndex = used ? result : 0;
+
+            if (supabaseClient) {
+                const { error } = await supabaseClient.from('study_mate').update({ day_off_used: used, day_off_day: dayIndex }).eq('id', id);
+                if (error) { alert("저장 실패: " + error.message); return; }
+            } else {
+                friend.day_off_used = used; friend.day_off_day = dayIndex; saveLocalBackup();
+            }
+            loadServerData();
+        }
+
+        async function deleteFriend(id, name) {
+            if(confirm(`정말로 '${name}' 님을 명단에서 삭제하시겠습니까?\n(이전/이후 모든 주차 기록이 함께 삭제됩니다.)`)) {
+                if (supabaseClient) {
+                    // 이름 기준으로 모든 주차(마스터 포함) 기록을 한 번에 삭제
+                    const { error } = await supabaseClient.from('study_mate').delete().eq('name', name);
+                    if (error) { alert("삭제 실패: " + error.message); return; }
+                } else {
+                    serverData = serverData.filter(f => f.id !== id);
+                    saveLocalBackup();
+                }
+                loadServerData();
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            initSupabase();
+            updateDDays();
+            currentWeekDates = getWeekDates(weekOffset);
+            loadServerData();
+            setInterval(loadServerData, 5000);
+        });
+    </script>
+</body>
+</html>
