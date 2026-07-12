@@ -72,6 +72,7 @@
         let weekOffset = 0; 
         let currentWeekDates = [];
         let serverData = [];
+        let isWeekChanging = false; // 🛠️ 버그 해결 핵심 변수: 주차 이동 중에만 이월되도록 제한
 
         function updateDDays() {
             const today = new Date();
@@ -104,6 +105,7 @@
         }
 
         function changeWeek(direction) {
+            isWeekChanging = true; // 주차 변경 작동 활성화
             weekOffset += direction;
             currentWeekDates = getWeekDates(weekOffset);
             loadServerData();
@@ -113,7 +115,6 @@
             const weekKey = getWeekStorageKey();
             document.getElementById('week-title').innerText = `${currentWeekDates[0].label.split('(')[0]} ~ ${currentWeekDates[6].label.split('(')[0]} 현황`;
 
-            // 🛠️ 안전장치 1: 서버 연결 실패 시 로컬 임시 데이터로 작동하게 하여 먹통 방지
             if (!supabaseClient) {
                 fallbackToLocal();
                 return;
@@ -128,8 +129,9 @@
 
                 if (error) throw error;
 
-                if (!data || data.length === 0) {
-                    // 새 주차 진입 시 자동 이월
+                // 🛠️ 자동 이월 로직 수정: '주차 조절 버튼을 눌러 이동했을 때만' 비어있는 칸을 이월 처리함 (삭제 시 부활 방지)
+                if ((!data || data.length === 0) && isWeekChanging) {
+                    isWeekChanging = false; // 플래그 초기화
                     let { data: prevData } = await supabaseClient.from('study_mate').select('*');
                     const uniqueNames = [...new Set(prevData?.map(p => p.name))];
                     
@@ -151,18 +153,18 @@
                         return;
                     }
                 }
+                
+                isWeekChanging = false; // 일반 주기적 로드 시 플래그 안전 해제
                 serverData = data || [];
                 renderApp();
             } catch (err) {
                 console.error("서버 통신 에러 발생:", err);
-                // 🛠️ 안전장치 2: 서버 에러 발생 시 알림 상태를 바꾸고 로컬 모드로 전환
                 document.getElementById('sync-status').className = "text-xs bg-amber-100 text-amber-800 font-bold px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-xs";
                 document.getElementById('sync-status').innerHTML = `<span class="w-1.5 h-1.5 bg-amber-500 rounded-full"></span> 연결 지연 (로컬 구동 중)`;
                 fallbackToLocal();
             }
         }
 
-        // 로컬 백업 구동 함수
         function fallbackToLocal() {
             const saved = localStorage.getItem(`local_backup_${getWeekStorageKey()}`);
             serverData = saved ? JSON.parse(saved) : [];
@@ -183,7 +185,6 @@
             }
 
             serverData.forEach(friend => {
-                // 안전장치: 데이터가 비어있을 경우 초기화
                 if(!friend.time_done_list) friend.time_done_list = [false, false, false, false, false, false, false];
                 if(!friend.start_done_list) friend.start_done_list = [false, false, false, false, false, false, false];
 
@@ -340,13 +341,15 @@
         }
 
         async function deleteFriend(id, name) {
-            if(confirm(`'${name}' 님을 삭제할까요?`)) {
+            if(confirm(`정말로 '${name}' 님을 명단에서 삭제하시겠습니까?`)) {
                 if (supabaseClient) {
                     await supabaseClient.from('study_mate').delete().eq('id', id);
                 } else {
                     serverData = serverData.filter(f => f.id !== id);
                     saveLocalBackup();
                 }
+                // 🛠️ 버그 해결 핵심: 삭제 직후에는 절대 이월 로직이 돌지 않도록 플래그 강제 다운
+                isWeekChanging = false; 
                 loadServerData();
             }
         }
@@ -355,7 +358,6 @@
         currentWeekDates = getWeekDates(weekOffset);
         loadServerData();
 
-        // 🔄 5초 주기 연동
         setInterval(loadServerData, 5000);
     </script>
 </body>
