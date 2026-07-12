@@ -40,7 +40,7 @@
         </div>
         <div class="max-w-6xl mx-auto px-4 pb-3 -mt-1">
             <p class="text-[11px] text-slate-400 font-medium text-center md:text-left">
-                하루 기준 · 공부시간 ○ (미달성) <span class="text-rose-500 font-bold">-1점</span> · 목표시간 미준수 <span class="text-rose-500 font-bold">-1점</span> · 🎁 보너스 별 탭 <span class="text-emerald-600 font-bold">+1점</span> (Day off인 날은 계산 제외) · 점수는 계속 이어지다가 잔고가 마이너스인 주에만 500원×점수로 정산돼요
+                하루 기준 · 공부시간 ○ (미달성) <span class="text-rose-500 font-bold">-1점</span> · 목표시간 미준수 <span class="text-rose-500 font-bold">-1점</span> · 🎁 보너스 별 탭 <span class="text-emerald-600 font-bold">+1점</span> (Day off인 날은 계산 제외) · 점수는 계속 이어지다가 잔고가 마이너스인 주에만 500원×점수로 정산돼요 · <span class="text-indigo-500 font-bold">⠿</span>을 꾹 눌러서 순서 변경 가능 (이 기기에만 적용, 다른 기기와 공유 안 됨)
             </p>
         </div>
     </header>
@@ -401,6 +401,7 @@
         }
 
         async function loadServerData() {
+            if (dragState.dragging) return; // 드래그 중에는 화면을 새로 그리지 않음 (다음 폴링 때 재시도)
             const weekKey = getWeekStorageKey();
             document.getElementById('week-title').innerText = `${currentWeekDates[0].label.split('(')[0]} ~ ${currentWeekDates[6].label.split('(')[0]} 현황`;
 
@@ -480,6 +481,84 @@
             }
             renderApp();
         }
+
+        // ===== 기기별(로컬) 카드 순서 =====
+        // 서버와 동기화하지 않고 이 브라우저(기기)에만 저장 -> 다른 기기/폴링과 무관하게 내 화면 순서가 고정됨
+        const ORDER_STORAGE_KEY = 'friend_order_v1';
+        function getLocalOrder() {
+            try { return JSON.parse(localStorage.getItem(ORDER_STORAGE_KEY) || '[]'); } catch(e) { return []; }
+        }
+        function saveLocalOrder(orderNames) {
+            localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(orderNames));
+        }
+        function applyLocalOrder(rows) {
+            const order = getLocalOrder();
+            if (order.length === 0) return rows;
+            const known = rows.filter(r => order.includes(r.name));
+            const unknown = rows.filter(r => !order.includes(r.name)); // 새로 등록된 친구는 뒤에 붙음
+            known.sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
+            return [...known, ...unknown];
+        }
+        function finalizeOrderFromDOM() {
+            const container = document.getElementById('friends-container');
+            const order = [...container.children].map(el => el.dataset.name).filter(Boolean);
+            saveLocalOrder(order);
+        }
+
+        // 드래그 핸들(⠿)을 꾹 누르면(long-press) 드래그 모드 진입, 손가락/마우스를 움직이면
+        // 그 위치의 카드와 순서를 바꾸고, 손을 떼면 이 기기에 순서를 저장한다.
+        // (window 리스너는 렌더할 때마다 쌓이지 않도록 한 번만 등록하고, 전역 상태로 어떤 카드가
+        //  드래그 중인지 추적한다.)
+        const dragState = { cardEl: null, dragging: false, timer: null };
+
+        function cancelLongPress() {
+            clearTimeout(dragState.timer);
+        }
+        function endDragGlobal() {
+            if (dragState.dragging && dragState.cardEl) {
+                dragState.cardEl.classList.remove('ring-2', 'ring-indigo-400', 'opacity-80', 'z-50');
+                finalizeOrderFromDOM();
+            }
+            dragState.dragging = false;
+            dragState.cardEl = null;
+            clearTimeout(dragState.timer);
+        }
+
+        function attachDragHandlers(handleEl, cardEl) {
+            handleEl.addEventListener('pointerdown', (e) => {
+                e.preventDefault();
+                dragState.timer = setTimeout(() => {
+                    dragState.dragging = true;
+                    dragState.cardEl = cardEl;
+                    cardEl.classList.add('ring-2', 'ring-indigo-400', 'opacity-80', 'z-50');
+                    if (navigator.vibrate) navigator.vibrate(25);
+                }, 400);
+            });
+            handleEl.addEventListener('pointerup', endDragGlobal);
+            handleEl.addEventListener('pointercancel', endDragGlobal);
+            handleEl.addEventListener('pointerleave', () => { if (!dragState.dragging) cancelLongPress(); });
+        }
+
+        // 전역 리스너는 딱 한 번만 등록
+        window.addEventListener('pointermove', (e) => {
+            if (!dragState.dragging || !dragState.cardEl) return;
+            const container = document.getElementById('friends-container');
+            const cardEl = dragState.cardEl;
+            const siblings = [...container.children].filter(el => el !== cardEl);
+            for (const el of siblings) {
+                const rect = el.getBoundingClientRect();
+                if (e.clientY > rect.top && e.clientY < rect.bottom) {
+                    const els = [...container.children];
+                    if (els.indexOf(el) < els.indexOf(cardEl)) {
+                        container.insertBefore(cardEl, el);
+                    } else {
+                        container.insertBefore(cardEl, el.nextSibling);
+                    }
+                    break;
+                }
+            }
+        });
+        window.addEventListener('pointerup', () => { if (dragState.dragging) endDragGlobal(); });
 
         // ===== 스크롤(휠) 시간 피커 =====
         let _timePickerResolve = null;
@@ -613,7 +692,9 @@
             const today = new Date();
             today.setHours(0,0,0,0);
 
-            serverData.forEach(friend => {
+            const orderedData = applyLocalOrder(serverData);
+
+            orderedData.forEach(friend => {
                 if(!friend.start_done_list) friend.start_done_list = [false, false, false, false, false, false, false];
                 if(!friend.study_done_list || friend.study_done_list.length !== 7) friend.study_done_list = [false,false,false,false,false,false,false];
                 if(!friend.bonus_done_list || friend.bonus_done_list.length !== 7) friend.bonus_done_list = [false,false,false,false,false,false,false];
@@ -633,11 +714,12 @@
                 const fineAmount = score.final < 0 ? Math.abs(score.final) * 500 : 0;
 
                 let cardHtml = `
-                    <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden flex flex-col justify-between relative">
+                    <div class="friend-card bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden flex flex-col justify-between relative">
                         <div class="p-6">
                             <div class="flex justify-between items-start mb-4">
                                 <div>
                                     <div class="flex items-center gap-2">
+                                        <span class="drag-handle text-slate-300 hover:text-slate-500 cursor-grab select-none text-base leading-none touch-none" title="꾹 눌러서 순서 변경">⠿</span>
                                         <h3 class="text-lg font-bold text-slate-900">${friend.name}</h3>
                                         <button onclick="deleteFriend(${friend.id}, '${friend.name}')" class="text-xs text-slate-300 hover:text-rose-500 font-bold transition cursor-pointer p-0.5"><i class="fa-solid fa-circle-xmark"></i></button>
                                     </div>
@@ -737,6 +819,15 @@
                         </div>
                     </div>`;
                 container.innerHTML += cardHtml;
+            });
+
+            // 렌더링 완료 후 각 카드에 이름 태그 + 드래그 핸들러 부착 (순서 저장을 위함)
+            [...container.children].forEach((cardEl, idx) => {
+                const friend = orderedData[idx];
+                if (!friend) return;
+                cardEl.dataset.name = friend.name;
+                const handle = cardEl.querySelector('.drag-handle');
+                if (handle) attachDragHandlers(handle, cardEl);
             });
         }
 
