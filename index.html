@@ -72,6 +72,8 @@
         let weekOffset = 0; 
         let currentWeekDates = [];
         let serverData = [];
+        // 각 친구별 터치하여 임시 선택한 요일을 관리하는 객체 (Key: friend.id, Value: [0, 1, ...])
+        let selectedDaysMap = {}; 
 
         function updateDDays() {
             const today = new Date();
@@ -109,6 +111,40 @@
             loadServerData();
         }
 
+        // 미래 및 현재 주차 진입 시 마스터 명단을 기반으로 자동 뼈대 생성 기능
+        async function syncWithMasterList(weekKey, currentData) {
+            if (!supabaseClient) return currentData;
+
+            // 1. 전체 마스터 친구 목록 조회
+            let { data: masters } = await supabaseClient.from('study_mate').select('*').eq('week_key', 'master_list');
+            if (!masters || masters.length === 0) return currentData;
+
+            let updated = false;
+            for (let master of masters) {
+                // 현재 주차에 해당 마스터 친구가 없다면 새로 생성 (미래 주차 자동 연동)
+                const exists = currentData.some(d => d.name === master.name);
+                if (!exists) {
+                    await supabaseClient.from('study_mate').insert([{
+                        id: Date.now() + Math.floor(Math.random() * 10000),
+                        name: master.name,
+                        target_start_time: master.target_start_time,
+                        week_key: weekKey,
+                        time_done_list: [false, false, false, false, false, false, false],
+                        start_done_list: [false, false, false, false, false, false, false],
+                        // 요일별 커스텀 목표 시간 (기본값은 전체 동일 설정)
+                        day_targets: [master.target_start_time, master.target_start_time, master.target_start_time, master.target_start_time, master.target_start_time, master.target_start_time, master.target_start_time]
+                    }]);
+                    updated = true;
+                }
+            }
+
+            if (updated) {
+                let { data: reData } = await supabaseClient.from('study_mate').select('*').eq('week_key', weekKey).order('created_at', { ascending: true });
+                return reData || [];
+            }
+            return currentData;
+        }
+
         async function loadServerData() {
             const weekKey = getWeekStorageKey();
             document.getElementById('week-title').innerText = `${currentWeekDates[0].label.split('(')[0]} ~ ${currentWeekDates[6].label.split('(')[0]} 현황`;
@@ -127,7 +163,9 @@
 
                 if (error) throw error;
 
-                // 🛠️ 버그 원인 원천 차단: 0명일 때 과거 내역을 뒤져서 부활시키던 '자동 이월' 로직을 완전히 제거했습니다.
+                // 마스터 명단 동기화 로직 가동
+                data = await syncWithMasterList(weekKey, data || []);
+
                 serverData = data || [];
                 renderApp();
             } catch (err) {
@@ -148,6 +186,53 @@
             localStorage.setItem(`local_backup_${getWeekStorageKey()}`, JSON.stringify(serverData));
         }
 
+        // 요일 다중 터치 토글 함수
+        function toggleDaySelection(friendId, dayIdx) {
+            if (!selectedDaysMap[friendId]) {
+                selectedDaysMap[friendId] = [];
+            }
+            const index = selectedDaysMap[friendId].indexOf(dayIdx);
+            if (index > -1) {
+                selectedDaysMap[friendId].splice(index, 1);
+            } else {
+                selectedDaysMap[friendId].push(dayIdx);
+            }
+            renderApp();
+        }
+
+        // 터치하여 선택된 요일들의 목표 시간 일괄 변경 (2번 요구사항)
+        async function editSelectedDaysTarget(friendId) {
+            const selectedDays = selectedDaysMap[friendId] || [];
+            if (selectedDays.length === 0) {
+                alert("목표 시간을 변경할 요일을 먼저 아래 표에서 터치하여 선택해 주세요!");
+                return;
+            }
+
+            const friend = serverData.find(f => f.id === friendId);
+            if (!friend) return;
+
+            const newTime = prompt(`선택한 요일들의 새로운 목표 공부 시작 시간을 입력하세요 (예: 08:40):`, friend.target_start_time);
+            if (!newTime) return;
+
+            // 요일별 목표 배열이 없으면 초기화
+            let dayTargets = friend.day_targets || [friend.target_start_time, friend.target_start_time, friend.target_start_time, friend.target_start_time, friend.target_start_time, friend.target_start_time, friend.target_start_time];
+            
+            selectedDays.forEach(idx => {
+                dayTargets[idx] = newTime;
+            });
+
+            if (supabaseClient) {
+                await supabaseClient.from('study_mate').update({ day_targets: dayTargets }).eq('id', friendId);
+            } else {
+                friend.day_targets = dayTargets;
+                saveLocalBackup();
+            }
+
+            // 변경 후 선택 배열 초기화
+            selectedDaysMap[friendId] = [];
+            loadServerData();
+        }
+
         function renderApp() {
             const container = document.getElementById('friends-container');
             container.innerHTML = '';
@@ -160,6 +245,7 @@
             serverData.forEach(friend => {
                 if(!friend.time_done_list) friend.time_done_list = [false, false, false, false, false, false, false];
                 if(!friend.start_done_list) friend.start_done_list = [false, false, false, false, false, false, false];
+                if(!friend.day_targets) friend.day_targets = [friend.target_start_time, friend.target_start_time, friend.target_start_time, friend.target_start_time, friend.target_start_time, friend.target_start_time, friend.target_start_time];
 
                 let timeSuccess = friend.time_done_list.filter(v => v === true).length;
                 let startSuccess = friend.start_done_list.filter(v => v === true).length;
@@ -180,19 +266,19 @@
                 const daysKorean = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"];
                 let dayOffText = friend.day_off_used && friend.day_off_day !== undefined ? daysKorean[friend.day_off_day] : "미사용";
 
+                const selectedDays = selectedDaysMap[friend.id] || [];
+
                 let cardHtml = `
                     <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden flex flex-col justify-between relative">
                         <div class="p-6">
-                            <div class="flex justify-between items-start mb-6">
+                            <div class="flex justify-between items-start mb-4">
                                 <div>
                                     <div class="flex items-center gap-2">
                                         <h3 class="text-lg font-bold text-slate-900">${friend.name}</h3>
                                         <button onclick="deleteFriend(${friend.id}, '${friend.name}')" class="text-xs text-slate-300 hover:text-rose-500 font-bold transition cursor-pointer p-0.5"><i class="fa-solid fa-circle-xmark"></i></button>
                                     </div>
-                                    <div class="text-xs text-slate-500 font-medium mt-1 flex items-center gap-1.5">
-                                        <i class="fa-regular fa-clock text-indigo-500"></i>
-                                        목표: <span class="text-slate-800 font-semibold">${friend.target_start_time} 까지</span>
-                                        <button onclick="editPersonalTarget(${friend.id}, '${friend.target_start_time}')" class="ml-1 text-[10px] text-indigo-600 font-bold underline cursor-pointer">변경</button>
+                                    <div class="text-[11px] text-slate-500 font-medium mt-1">
+                                        요일 터치 후 <button onclick="editSelectedDaysTarget(${friend.id})" class="ml-1 text-indigo-600 font-bold underline cursor-pointer bg-indigo-50 px-2 py-0.5 rounded-md">선택 요일 목표 변경</button>
                                     </div>
                                 </div>
                                 <button onclick="setDayOff(${friend.id})" class="text-xs font-bold px-3 py-1.5 rounded-xl border transition cursor-pointer ${friend.day_off_used ? 'bg-amber-100 border-amber-200 text-amber-800' : 'bg-white border-slate-200 text-slate-600'}">
@@ -200,15 +286,28 @@
                                 </button>
                             </div>
 
-                            <div class="grid grid-cols-2 gap-4 mb-6 bg-slate-50 p-4 rounded-xl border border-slate-100">
-                                <div><div class="flex justify-between text-xs font-bold text-slate-600 mb-1.5"><span>⏰ 공부 시간</span><span class="text-indigo-600">${timeProgress}%</span></div><div class="w-full bg-slate-200 h-2 rounded-full overflow-hidden"><div class="bg-indigo-600 h-full rounded-full" style="width: ${timeProgress}%"></div></div></div>
-                                <div><div class="flex justify-between text-xs font-bold text-slate-600 mb-1.5"><span>🎯 시작 시간</span><span class="text-emerald-600">${targetProgress}%</span></div><div class="w-full bg-slate-200 h-2 rounded-full overflow-hidden"><div class="bg-emerald-500 h-full rounded-full" style="width: ${targetProgress}%"></div></div></div>
+                            <div class="flex gap-1 mb-4 bg-slate-50 p-1.5 rounded-xl border border-slate-100 justify-between">
+                                ${["월", "화", "수", "목", "금", "토", "일"].map((day, idx) => {
+                                    const isSelected = selectedDays.includes(idx);
+                                    return `<button onclick="toggleDaySelection(${friend.id}, ${idx})" class="flex-1 text-xs py-1 rounded-lg font-bold transition cursor-pointer ${isSelected ? 'bg-indigo-600 text-white shadow-xs' : 'bg-white text-slate-600 border border-slate-200/60 hover:bg-slate-50'}\">${day}</button>`;
+                                }).join('')}
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-4 mb-4 bg-slate-50 p-3 rounded-xl border border-slate-100">
+                                <div><div class="flex justify-between text-xs font-bold text-slate-600 mb-1"><span>⏰ 공부 시간</span><span class="text-indigo-600">${timeProgress}%</span></div><div class="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden"><div class="bg-indigo-600 h-full rounded-full" style="width: ${timeProgress}%"></div></div></div>
+                                <div><div class="flex justify-between text-xs font-bold text-slate-600 mb-1"><span>🎯 시작 시간</span><span class="text-emerald-600">${targetProgress}%</span></div><div class="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden"><div class="bg-emerald-500 h-full rounded-full" style="width: ${targetProgress}%"></div></div></div>
                             </div>
 
                             <div class="space-y-3">
                                 <div class="grid grid-cols-8 text-center text-[10px] font-bold text-slate-400 pb-1 border-b border-slate-100">
                                     <div>구분</div>${currentWeekDates.map(d => `<div>${d.label}</div>`).join('')}
                                 </div>
+                                
+                                <div class="grid grid-cols-8 text-center text-[9px] font-bold text-indigo-500 bg-indigo-50/50 py-0.5 rounded-md">
+                                    <div class="text-slate-400">목표시간</div>
+                                    ${friend.day_targets.map(t => `<div>${t}</div>`).join('')}
+                                </div>
+
                                 <div class="grid grid-cols-8 items-center text-center">
                                     <div class="text-[11px] font-bold text-slate-500 text-left">공부시간</div>
                                     ${friend.time_done_list.map((v, idx) => `
@@ -246,19 +345,33 @@
             const time = prompt("목표 시작 시간을 입력하세요:", "08:40");
             
             if (supabaseClient) {
+                // 1. 미래 자동 생성을 위해 마스터 보관함(`master_list`)에 기본 등록
+                await supabaseClient.from('study_mate').insert([{
+                    id: Date.now() + 1,
+                    name: name,
+                    target_start_time: time,
+                    week_key: 'master_list',
+                    time_done_list: [false, false, false, false, false, false, false],
+                    start_done_list: [false, false, false, false, false, false, false],
+                    day_targets: [time, time, time, time, time, time, time]
+                }]);
+
+                // 2. 현재 활성화되어 보고 있는 주차에도 즉시 노출하도록 등록
                 await supabaseClient.from('study_mate').insert([{
                     id: Date.now(),
                     name: name,
                     target_start_time: time,
                     week_key: getWeekStorageKey(),
                     time_done_list: [false, false, false, false, false, false, false],
-                    start_done_list: [false, false, false, false, false, false, false]
+                    start_done_list: [false, false, false, false, false, false, false],
+                    day_targets: [time, time, time, time, time, time, time]
                 }]);
             } else {
                 serverData.push({
                     id: Date.now(), name: name, target_start_time: time, week_key: getWeekStorageKey(),
                     time_done_list: [false, false, false, false, false, false, false],
-                    start_done_list: [false, false, false, false, false, false, false]
+                    start_done_list: [false, false, false, false, false, false, false],
+                    day_targets: [time, time, time, time, time, time, time]
                 });
                 saveLocalBackup();
             }
@@ -301,21 +414,11 @@
             loadServerData();
         }
 
-        async function editPersonalTarget(id, currentTime) {
-            const newTime = prompt("변경할 목표 시간:", currentTime);
-            if(!newTime) return;
-            if (supabaseClient) {
-                await supabaseClient.from('study_mate').update({ target_start_time: newTime }).eq('id', id);
-            } else {
-                const friend = serverData.find(f => f.id === id);
-                if(friend) { friend.target_start_time = newTime; saveLocalBackup(); }
-            }
-            loadServerData();
-        }
-
         async function deleteFriend(id, name) {
-            if(confirm(`정말로 '${name}' 님을 명단에서 삭제하시겠습니까?`)) {
+            if(confirm(`정말로 '${name}' 님을 명단에서 삭제하시겠습니까?\n(미래 주차 자동 연동 목록에서도 함께 지워집니다.)`)) {
                 if (supabaseClient) {
+                    // 마스터 목록과 현재 주차 목록 둘 다에서 완전히 삭제 처리
+                    await supabaseClient.from('study_mate').delete().eq('name', name).eq('week_key', 'master_list');
                     await supabaseClient.from('study_mate').delete().eq('id', id);
                 } else {
                     serverData = serverData.filter(f => f.id !== id);
