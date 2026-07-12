@@ -129,3 +129,70 @@
                 container.innerHTML = `<div style="grid-column: 1/-1; text-align:center; padding:40px; color:#94a3b8; font-weight:bold;">상단의 '+ 친구 등록' 버튼을 눌러 스터디 멤버를 추가해 주세요!</div>`;
                 return;
             }
+
+            members.forEach(m => {
+                // 벌금 계산 (X 하나당 500원)
+                let penalty = 0;
+                m.timeList.forEach(v => { if(!v) penalty += 500; });
+                m.startList.forEach(v => { if(!v) penalty += 500; });
+
+                let html = `
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="name">👤 ${m.name}</h3>
+                            <button onclick="deleteMember(${m.id})" class="del-btn">삭제</button>
+                        </div>
+                        
+                        <div style="font-size: 12px; color: #4f46e5; font-weight: bold; background: #eef2ff; padding: 6px; border-radius: 6px; text-align: center;">
+                            🎯 주간 기본 목표 시간: ${m.target} 까지 출석
+                        </div>
+
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>구분</th>
+                                    <th>월</th><th>화</th><th>수</th><th>목</th><th>금</th><th>토</th><th>일</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td style="font-weight:bold; color:#475569;">공부시간</td>
+                                    ${m.timeList.map((v, i) => `
+                                        <td>
+                                            <button onclick="toggleCheck(${m.id}, ${i}, 'time')" class="check-btn ${v?'active-time':''}">
+                                                ${v?'O':'X'}
+                                            </button>
+                                        </td>
+                                    `).join('')}
+                                </tr>
+                                <tr>
+                                    <td style="font-weight:bold; color:#475569;">시작시간</td>
+                                    ${m.startList.map((v, i) => `
+                                        <td>
+                                            <button onclick="toggleCheck(${m.id}, ${i}, 'start')" class="check-btn ${v?'active-start':''}">
+                                                ${v?'O':'X'}
+                                            </button>
+                                        </td>
+                                    `).join('')}
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <div class="footer-bar">
+                            <span>이번 주 누적 벌금</span>
+                            <span>${penalty.toLocaleString()}원</span>
+                        </div>
+                    </div>
+                `;
+                container.innerHTML += html;
+            });
+        }
+
+        // 문서 로드 완료 후 실행 안전장치
+        window.onload = function() {
+            loadData();
+        };
+        loadData();
+    </script>
+</body>
+</html>
